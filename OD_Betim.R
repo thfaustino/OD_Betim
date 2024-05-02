@@ -4,6 +4,8 @@ library(readxl)
 library(plyr)
 library(dplyr)
 library(tidyr)
+library(data.table)
+library(stringr)
 
 #CARREGANDO ARQUIVOS
 setwd('GPS')
@@ -30,7 +32,6 @@ for(j in 1:ncol(SBE)){
  }
 }
 rm(j)
-
 SBE$X.1<-NULL
 SBE$X.2<-NULL
 SBE$X.3<-NULL
@@ -61,10 +62,48 @@ GPS$CHAVE<-paste(GPS$VEIC,GPS$DATA_HORA)
 GPS$CHAVE<-gsub(':','',GPS$CHAVE)
 GPS$CHAVE<-gsub(' ','',GPS$CHAVE)
 GPS$CHAVE<-gsub('-','',GPS$CHAVE)
+GPS$CHAVE<-gsub('/','',GPS$CHAVE)
 GPS$CHAVE<-as.numeric(GPS$CHAVE)
-SBE$CHAVE<-
+GPS<-arrange(GPS,VEIC,DATA_HORA)
+SBE$CHAVE<-paste(SBE$VEIC_PROG,str_sub(SBE$DATA_UTILIZACAO,start=-4),str_sub(SBE$DATA_UTILIZACAO,start=4,end=5),str_sub(SBE$DATA_UTILIZACAO,end=2),SBE$HORA_UTILIZACAO)
+SBE$CHAVE<-gsub(':','',SBE$CHAVE)
+SBE$CHAVE<-gsub(' ','',SBE$CHAVE)
+SBE$CHAVE<-gsub('-','',SBE$CHAVE)
+SBE$CHAVE<-gsub('/','',SBE$CHAVE)
+SBE$CHAVE<-as.numeric(SBE$CHAVE)
+
+
+### *** VERIFICAR A NECESSIDADE DE CORRIGIR O NÚMERO DE ORDEM DOS VEÍCULOS DO STPBC**
+
+# FUNÇÃO PARA ASSOCIAR O CARTAO AO PED
+associar_par_cod_siu <- function(SBE, GPS) {
+  setDT(SBE)
+  setDT(GPS)
+  
+  # Verificar valores faltantes
+  if (any(is.na(SBE$CHAVE))) {
+    stop("Valores faltantes na coluna CHAVE do dataset SBE.")
+  }
+  if (any(is.na(GPS$CHAVE))) {
+    stop("Valores faltantes na coluna CHAVE do dataset GPS.")
+  }
+  
+  setkey(SBE, CHAVE)
+  setkey(GPS, CHAVE)
+  indices_proximos <- GPS[SBE, roll = "nearest", on = "CHAVE"]$LATITUDE
+  SBE$LATITUDE <- indices_proximos
+  indices_proximos <- GPS[SBE, roll = "nearest", on = "CHAVE"]$LONGITUDE
+  SBE$LONGITUDE<- indices_proximos
+  return(SBE)
+}
+
+#ASSOCIANDO EMBARQUES
+EMBARQUES <- associar_par_cod_siu(SBE, GPS)
 
 
 #rascunho
 head(SBE)
+head(GPS)
 GPS$LATITUDE
+
+summary(as.factor(indices_proximos))
