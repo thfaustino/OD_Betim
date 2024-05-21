@@ -6,6 +6,7 @@ library(plyr)
 library(stringr)
 library(readxl)
 library(dplyr)
+library(sf)
 
 #CARREGANDO ARQUIVOS
 setwd('D:/BETIM/OD/01_DADOS_BRUTOS')
@@ -36,6 +37,16 @@ SBE$X.8<-NULL
 SBE$X.9<-NULL
 SBE$X.10<-NULL
 colnames(SBE)<-c("CARTAO","TP_USUARIO","DATA_UTILIZACAO","HORA_UTILIZACAO","LATITUDE","LONGITUDE","TP_PGTO","COD_LINHA","VEIC_PROG","VEIC_REAL","HORA_ABERTURA","VALOR_COBRADO")
+
+#GRADE HEXAGONAL
+setwd('LIMITE')
+LIM<-sf::st_read('BETIM.shp')
+extensao<-sf::st_bbox(LIM)
+grid<-sf::st_make_grid(extensao,cellsize = .005, square=F,crs=4326)
+grid<-sf::st_as_sf(grid,crs=4326)
+grid$ID_GRID<-1:nrow(grid)
+setwd('..')
+
 
 #GPS
 setwd('GPS')
@@ -98,15 +109,16 @@ for(j in 1:length(myfiles)){
   SBE<-dplyr::filter(SBE,!is.na(CHAVE))
   
   ##COMPATIBILIZANDO DIAS DE GPS COM O SBE E RETIRANDO VEÍCULOS COM FALHAS NA COMUNICAÇÃO
-  
   SBE<-dplyr::filter(SBE,DATAHORA_UTILIZACAO>=min(GPS$DATA_HORA),DATAHORA_UTILIZACAO<=max(GPS$DATA_HORA))
 
   #ASSOCIANDO EMBARQUES
   EMBARQUES2 <- associar_par_cod_siu(SBE, GPS)
   if(j==1){
     EMBARQUES<-EMBARQUES2
+    GPS2<-GPS
   }else{
     EMBARQUES<-rbind(EMBARQUES,EMBARQUES2)
+    GPS2<-rbind(GPS2,GPS)
   }
   print(str_c(j," de ",length(myfiles)," finalizado."))
 }
@@ -118,16 +130,9 @@ setwd('02_RESULTADOS')
 write.csv2(EMBARQUES,'EMBARQUES.csv',row.names = F)
 setwd('..')
 rm(j,EMBARQUES2,GPS,SBE,SBE2,myfiles,associar_par_cod_siu)
+EMBARQUES<-read.csv2(file.choose(),sep=";")
 
 ### TRABALHANDO COM DADOS DE PESQUISA SOBE E DESCE COM SENHA
-#GRADE HEXAGONAL
-setwd('01_DADOS_BRUTOS/LIMITE')
-LIM<-sf::st_read('BETIM.shp')
-extensao<-sf::st_bbox(LIM)
-grid<-sf::st_make_grid(extensao,cellsize = .005, square=F,crs=4326)
-grid<-sf::st_as_sf(grid,crs=4326)
-grid$ID_GRID<-1:nrow(grid)
-
 #CARTAO
 EMBARQUES$ID_val<-c(1:nrow(EMBARQUES))
 VAL<-EMBARQUES %>% dplyr::select(ID_val,LATITUDE,LONGITUDE)
@@ -135,10 +140,10 @@ VAL<-sf::st_as_sf(VAL,coords=c("LONGITUDE","LATITUDE"),crs=4326)
 VAL<-sf::st_join(VAL,grid)
 VAL<-as.data.frame(VAL)
 EMBARQUES$ID_grid<-VAL$ID_GRID
-rm(VAL,LIM,extensao)
+rm(VAL,extensao)
 
 #RETIRANDO VALE SOCIAL E DINHEIRO (CARTÕES COM DESEMBARQUE NÃO RASTREÁVEIS)
-OD<-EMBARQUES %>% dplyr::select(CARTAO,TP_USUARIO,DATA_UTILIZACAO,HORA_UTILIZACAO,COD_LINHA,HORA_ABERTURA,SENTIDO,ID_grid)
+OD<-EMBARQUES %>% dplyr::select(CARTAO,TP_USUARIO,DATA_UTILIZACAO,HORA_UTILIZACAO,COD_LINHA,VEIC_PROG,HORA_ABERTURA,SENTIDO,VEIC_PROG,ID_grid)
 OD<-arrange(OD,CARTAO,DATA_UTILIZACAO,HORA_UTILIZACAO)
 DIN<-rbind(dplyr::filter(OD,CARTAO=='0'),dplyr::filter(OD,TP_USUARIO=='VALE SOC'))
 OD<-dplyr::filter(OD,CARTAO!=0)
@@ -163,13 +168,53 @@ OD<-OD[-indices,]
 indices <- (OD$CARTAO_DIA[-1] == OD$CARTAO_DIA[-nrow(OD)]) & (as.POSIXct(OD$HORA_UTILIZACAO[-1], format = "%H:%M")-as.POSIXct(OD$HORA_UTILIZACAO[-nrow(OD)], format = "%H:%M")>=300)
 indices <- which(indices)
 OD$ID_DESTINO[indices]<-OD$ID_grid[indices+1]
-rm(i,indices)
+rm(indices)
 
 #VALIDACOES NA MESMA GRADE
 DIN<-rbind(DIN,dplyr::filter(OD,ID_DESTINO==ID_grid) %>% dplyr::select(colnames(DIN)))
 OD<-filter(OD,ID_DESTINO!=ID_grid)
 OD$VAL1<-NULL
 OD$CARTAO_DIA<-NULL
+
+#VALIDACOES DESTINO - IDENTIFICAR PADRÃO
+setwd('01_DADOS_BRUTOS/GPS')
+myfiles = list.files(path=getwd(),pattern="*.xls*",full.names=TRUE)
+centroides<-st_centroid(grid)
+OD$DATA_HORA<-str_c(OD$DATA_UTILIZACAO,OD$HORA_UTILIZACAO,sep=' ')
+OD$DATA_HORA<-as.POSIXct(OD$DATA_HORA, format="%d/%m/%Y %H:%M:%S",tz='UTC')
+OD<-merge(OD,centroides,by.x="ID_DESTINO",by.y = "ID_GRID")
+OD<-st_as_sf(OD,crs=4326)
+
+for(j in 1:length(myfiles)){
+  GPS<-dplyr::filter(read_excel(myfiles[j])) %>% dplyr::select(Veículo,`Data da Posição`,`Grade de Operação`,...6,Latitude,Longitude)
+  colnames(GPS)<-c("VEIC","DATA_HORA","LINHA","SENTIDO","LATITUDE","LONGITUDE")
+  GPS<-GPS[-1,]
+  GPS<-as.data.frame(GPS)
+  GPS$DATA_HORA<-as.POSIXct(GPS$DATA_HORA, format="%Y-%m-%d %H:%M:%S")
+  GPS<-arrange(GPS,VEIC,DATA_HORA)
+  GPS<-sf::st_as_sf(GPS,coords=c("LONGITUDE","LATITUDE"),crs=4326)
+  GPS<-sf::st_join(GPS,grid)
+  OD2<-filter(OD,VEIC_PROG==GPS$VEIC[1])
+  OD2<-filter(OD2,OD2$DATA_HORA<=max(GPS$DATA_HORA))
+  OD2<-filter(OD2,OD2$DATA_HORA>=min(GPS$DATA_HORA))
+  i<-1
+  for(i in 1:nrow(OD2)){
+    GPS2<-dplyr::filter(GPS,GPS$DATA_HORA>OD2$DATA_HORA[i],GPS$DATA_HORA<=OD2$DATA_HORA[i]+7200)
+    dist<-st_distance(OD2[i,],GPS2)
+    indice<-which(dist==min(dist))
+    indice<-indice[1]
+    OD2$ID_DESEMBARQUE[i]<-GPS2$ID_GRID[indice]
+    OD2$HORA_DESEMBARQUE[i]<-GPS2$DATA_HORA[indice]
+    OD2$DIST_DES[i]<-min(dist)
+  }
+  if(j==1){
+    SDCS<-OD2
+  }else{
+    SDCS<-rbind(SDCS,OD2)
+  }
+  print(str_c(gsub('.xls','',basename(myfiles[j])),' concluido. Faltam ',length(myfiles)-j,' dados de veículos.'))
+}
+
 
 #EXPANSÃO: DESTINO PARA CARTÕES SEM PAR O-D
 DIN$CHAVE<-str_c(DIN$COD_LINHA,DIN$ID_grid,str_sub(DIN$HORA_UTILIZACAO,end=2),sep='-')
@@ -205,7 +250,7 @@ FE4$QTDo[is.na(FE4$QTDo)]<-0
 FE4$FE4<-(FE4$QTDo)/(FE4$QTDod)
 OD<-merge(OD,FE4 %>% dplyr::select(CHAVE,FE4),all.x=T)
 OD$FE<-OD$FE4*OD$FE2
-rm(EMBARQUES,DIN,DINfe,FE2,FE3,FE4,ODfe)
+rm(EMBARQUES,DIN,DINfe,FE2,FE4,ODfe)
 OD$CHAVE<-NULL
 OD<-arrange(OD,COD_LINHA,DATA_UTILIZACAO,HORA_ABERTURA,HORA_UTILIZACAO)
 OD$FE1<-NULL
@@ -218,6 +263,4 @@ setwd('..')
 setwd('..')
 setwd('02_RESULTADOS')
 write.csv2(OD,"SDCS.csv",row.names = F)
-
-#CALCULANDO PTC POR VIAGEM
-sf::st_write(grid,'grid.json',driver="GeoJSON",crs=4326)
+OD<-read.csv2(file.choose(),sep=";")
