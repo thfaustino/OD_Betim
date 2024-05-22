@@ -1,5 +1,5 @@
 options(scipen = 999)
-
+start<-Sys.time()
 
 #LIBRARIES
 library(plyr)
@@ -130,7 +130,6 @@ setwd('02_RESULTADOS')
 write.csv2(EMBARQUES,'EMBARQUES.csv',row.names = F)
 setwd('..')
 rm(j,EMBARQUES2,GPS,SBE,SBE2,myfiles,associar_par_cod_siu)
-EMBARQUES<-read.csv2(file.choose(),sep=";")
 
 ### TRABALHANDO COM DADOS DE PESQUISA SOBE E DESCE COM SENHA
 #CARTAO
@@ -184,10 +183,11 @@ OD$DATA_HORA<-str_c(OD$DATA_UTILIZACAO,OD$HORA_UTILIZACAO,sep=' ')
 OD$DATA_HORA<-as.POSIXct(OD$DATA_HORA, format="%d/%m/%Y %H:%M:%S",tz='UTC')
 OD<-merge(OD,centroides,by.x="ID_DESTINO",by.y = "ID_GRID")
 OD<-st_as_sf(OD,crs=4326)
+OD$VEIC_PROG<-gsub('A','',OD$VEIC_PROG)
 
 for(j in 1:length(myfiles)){
-  GPS<-dplyr::filter(read_excel(myfiles[j])) %>% dplyr::select(Veículo,`Data da Posição`,`Grade de Operação`,...6,Latitude,Longitude)
-  colnames(GPS)<-c("VEIC","DATA_HORA","LINHA","SENTIDO","LATITUDE","LONGITUDE")
+  GPS<-read_excel(myfiles[j])  %>% dplyr::select(Veículo,`Data da Posição`,Latitude,Longitude)
+  colnames(GPS)<-c("VEIC","DATA_HORA","LATITUDE","LONGITUDE")
   GPS<-GPS[-1,]
   GPS<-as.data.frame(GPS)
   GPS$DATA_HORA<-as.POSIXct(GPS$DATA_HORA, format="%Y-%m-%d %H:%M:%S")
@@ -215,6 +215,21 @@ for(j in 1:length(myfiles)){
   print(str_c(gsub('.xls','',basename(myfiles[j])),' concluido. Faltam ',length(myfiles)-j,' dados de veículos.'))
 }
 
+SDCS<-as.data.frame(SDCS)
+SDCS$x<-NULL
+val_nao_encont<-dplyr::filter(SDCS,is.na(ID_DESEMBARQUE))
+SDCS<-dplyr::filter(SDCS,!is.na(ID_DESEMBARQUE))
+SDCS<-SDCS[!duplicated(SDCS),]
+Q1<-quantile(SDCS$DIST_DES,.25)
+Q2<-quantile(SDCS$DIST_DES,.75)
+IQR<-Q2-Q1
+Lsup=Q2+(1.5*IQR)
+val_nao_encont<-rbind(val_nao_encont,filter(SDCS,DIST_DES>Lsup))
+SDCS<-filter(SDCS,DIST_DES<=Lsup)
+OD<-SDCS
+val_nao_encont<-val_nao_encont %>% dplyr::select(colnames(DIN))
+DIN<-rbind(DIN,val_nao_encont)
+rm(SDCS,IQR,Lsup,Q1,Q2)
 
 #EXPANSÃO: DESTINO PARA CARTÕES SEM PAR O-D
 DIN$CHAVE<-str_c(DIN$COD_LINHA,DIN$ID_grid,str_sub(DIN$HORA_UTILIZACAO,end=2),sep='-')
@@ -263,4 +278,26 @@ setwd('..')
 setwd('..')
 setwd('02_RESULTADOS')
 write.csv2(OD,"SDCS.csv",row.names = F)
-OD<-read.csv2(file.choose(),sep=";")
+end=Sys.time()
+
+## INDICES DE ROTATIVIDADE
+head(OD)
+OD<-arrange(OD,COD_LINHA,HORA_ABERTURA,DATA_HORA)
+EMBARQUES<-OD %>% dplyr::select(DATA_UTILIZACAO,COD_LINHA,VEIC_PROG,HORA_ABERTURA,SENTIDO,ID_grid,DATA_HORA,FE)
+DESEMBARQUES<-OD %>% dplyr::select(DATA_UTILIZACAO,COD_LINHA,VEIC_PROG,HORA_ABERTURA,SENTIDO,ID_DESEMBARQUE,HORA_DESEMBARQUE,FE)
+DESEMBARQUES$FE=(-1)*DESEMBARQUES$FE
+colnames(DESEMBARQUES)<-colnames(EMBARQUES)
+OCUP<-rbind(EMBARQUES,DESEMBARQUES)
+rm(DESEMBARQUES)
+OCUP <- OCUP %>%  arrange(DATA_UTILIZACAO, COD_LINHA, HORA_ABERTURA, DATA_HORA) %>%  group_by(DATA_UTILIZACAO, HORA_ABERTURA, VEIC_PROG) %>%  mutate(OCUP = cumsum(FE)) %>%  ungroup()
+EMBARQUES<-EMBARQUES %>% group_by(DATA_UTILIZACAO,COD_LINHA,VEIC_PROG,HORA_ABERTURA) %>% summarise(PASS_VG=sum(FE))
+EMBARQUES$CHAVE<-str_c(EMBARQUES$VEIC_PROG,EMBARQUES$DATA_UTILIZACAO,EMBARQUES$HORA_ABERTURA)
+OCUP$CHAVE<-str_c(OCUP$VEIC_PROG,OCUP$DATA_UTILIZACAO,OCUP$HORA_ABERTURA)
+OCUP<-merge(OCUP,EMBARQUES %>% dplyr::select(CHAVE,PASS_VG),all.x=T)
+PTC<-OCUP %>% group_by(CHAVE) %>% summarise(PTC=max(OCUP))
+OCUP<-merge(OCUP,PTC,by.x="CHAVE",by.y="CHAVE")
+OCUP$IR<-OCUP$PASS_VG/OCUP$PTC
+
+head(OCUP)
+write.csv2(OCUP,'IR.csv',row.names = F)
+
