@@ -47,6 +47,34 @@ grid<-sf::st_as_sf(grid,crs=4326)
 grid$ID_GRID<-1:nrow(grid)
 setwd('..')
 
+#BAIRROS
+setwd('BAIRROS')
+myfiles = list.files(path=getwd(),pattern="*.kml",full.names=TRUE)
+BAIRRO<-st_read(myfiles[1],crs=4326)
+BAIRRO<-st_zm(BAIRRO, drop = TRUE, what = "ZM")
+geometries <- st_geometry(BAIRRO)
+
+# Filtrar apenas as geometrias que são POLYGON ou MULTIPOLYGON
+polygons <- lapply(geometries, function(geom) {
+  if (inherits(geom, "GEOMETRYCOLLECTION")) {
+    st_collection_extract(geom, "POLYGON")
+  } else if (inherits(geom, "POLYGON") || inherits(geom, "MULTIPOLYGON")) {
+    geom
+  } else {
+    NULL
+  }
+})
+
+polygons <- polygons[!sapply(polygons, is.null)]
+polygons_sf <- st_sfc(polygons, crs = st_crs(BAIRRO))
+polygons_sf <- st_sf(geometry = polygons_sf)
+BAIRRO$Description<-NULL
+BAIRRO$geometry<-polygons_sf$geometry
+rm(polygons_sf,polygons)
+invalid_geom <- st_is_valid(BAIRRO)
+BAIRRO[invalid_geom == T, ]
+BAIRRO <- st_make_valid(BAIRRO)
+rm(geometries,invalid_geom)
 
 #GPS
 setwd('GPS')
@@ -136,6 +164,9 @@ rm(j,EMBARQUES2,GPS,SBE,SBE2,myfiles,associar_par_cod_siu)
 EMBARQUES$ID_val<-c(1:nrow(EMBARQUES))
 VAL<-EMBARQUES %>% dplyr::select(ID_val,LATITUDE,LONGITUDE)
 VAL<-sf::st_as_sf(VAL,coords=c("LONGITUDE","LATITUDE"),crs=4326)
+centroides<-st_centroid(grid)
+centroides<-st_join(centroides,BAIRRO)
+grid$NM_BAIRRO_EMB<-centroides$Name
 VAL<-sf::st_join(VAL,grid)
 VAL<-as.data.frame(VAL)
 EMBARQUES$ID_grid<-VAL$ID_GRID
@@ -179,6 +210,7 @@ OD$CARTAO_DIA<-NULL
 setwd('01_DADOS_BRUTOS/GPS')
 myfiles = list.files(path=getwd(),pattern="*.xls*",full.names=TRUE)
 centroides<-st_centroid(grid)
+centroides<-st_join(centroides,BAIRRO)
 OD$DATA_HORA<-str_c(OD$DATA_UTILIZACAO,OD$HORA_UTILIZACAO,sep=' ')
 OD$DATA_HORA<-as.POSIXct(OD$DATA_HORA, format="%d/%m/%Y %H:%M:%S",tz='UTC')
 OD<-merge(OD,centroides,by.x="ID_DESTINO",by.y = "ID_GRID")
@@ -281,7 +313,6 @@ write.csv2(OD,"SDCS.csv",row.names = F)
 end=Sys.time()
 
 ## INDICES DE ROTATIVIDADE
-head(OD)
 OD<-arrange(OD,COD_LINHA,HORA_ABERTURA,DATA_HORA)
 EMBARQUES<-OD %>% dplyr::select(DATA_UTILIZACAO,COD_LINHA,VEIC_PROG,HORA_ABERTURA,SENTIDO,ID_grid,DATA_HORA,FE)
 DESEMBARQUES<-OD %>% dplyr::select(DATA_UTILIZACAO,COD_LINHA,VEIC_PROG,HORA_ABERTURA,SENTIDO,ID_DESEMBARQUE,HORA_DESEMBARQUE,FE)
@@ -297,7 +328,5 @@ OCUP<-merge(OCUP,EMBARQUES %>% dplyr::select(CHAVE,PASS_VG),all.x=T)
 PTC<-OCUP %>% group_by(CHAVE) %>% summarise(PTC=max(OCUP))
 OCUP<-merge(OCUP,PTC,by.x="CHAVE",by.y="CHAVE")
 OCUP$IR<-OCUP$PASS_VG/OCUP$PTC
-
-head(OCUP)
 write.csv2(OCUP,'IR.csv',row.names = F)
 
